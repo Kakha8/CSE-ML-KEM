@@ -1,0 +1,12 @@
+[package]
+name = "native-rust"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = "0.22"
+getrandom = "0.4"
+ml-kem = { version = "0.3.2", features = ["getrandom", "zeroize"] }
