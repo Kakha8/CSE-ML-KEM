@@ -18,4 +18,14 @@ public final class NativeMath {
     public static native boolean encryptSelectedFile(
             String inputPath
     );
+
+    public static native boolean decryptSelectedFile(
+            String inputPath
+    );
+
+    public static native boolean decryptSelectedFileTo(
+            String inputPath,
+            String outputPath,
+            boolean overwrite
+    );
 }

@@ -1,13 +1,12 @@
 mod dek_envelope;
 mod dpapi;
+mod file_crypto;
 mod keystore;
 mod mlkem_keystore;
-mod file_crypto;
 
 use jni::{
+    EnvUnowned, jni_mangle,
     objects::JString,
-    EnvUnowned,
-    jni_mangle,
     sys::{jboolean, jclass, jint},
 };
 
@@ -226,14 +225,79 @@ pub fn test_stored_ml_kem_dek_envelope<'local>(
     keys_match
 }
 
-#[jni_mangle(
-    "kakha.kudava.NativeMath",
-    "encryptSelectedFile"
-)]
+#[jni_mangle("kakha.kudava.NativeMath", "encryptSelectedFile")]
 pub fn encrypt_selected_file<'local>(
     mut unowned_env: EnvUnowned<'local>,
     _class: jclass,
     input_path: JString<'local>,
+) -> jboolean {
+    unowned_env
+        .with_env(|env| -> Result<jboolean, jni::errors::Error> {
+            let input_path = input_path.try_to_string(env)?;
+
+            let succeeded = match file_crypto::encrypt_file(std::path::Path::new(&input_path)) {
+                Ok(output_path) => {
+                    println!("File encrypted successfully");
+
+                    println!("Encrypted output: {}", output_path.display());
+
+                    true
+                }
+
+                Err(error) => {
+                    eprintln!("File encryption failed: {error}");
+
+                    false
+                }
+            };
+
+            Ok(succeeded)
+        })
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[jni_mangle("kakha.kudava.NativeMath", "decryptSelectedFile")]
+pub fn decrypt_selected_file<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: jclass,
+    input_path: JString<'local>,
+) -> jboolean {
+    unowned_env
+        .with_env(|env| -> Result<jboolean, jni::errors::Error> {
+            let input_path = input_path.try_to_string(env)?;
+
+            let succeeded = match file_crypto::decrypt_file(std::path::Path::new(&input_path)) {
+                Ok(output_path) => {
+                    println!("File decrypted successfully");
+
+                    println!("Decrypted output: {}", output_path.display());
+
+                    true
+                }
+
+                Err(error) => {
+                    eprintln!("File decryption failed: {error}");
+
+                    false
+                }
+            };
+
+            Ok(succeeded)
+        })
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+
+#[jni_mangle(
+    "kakha.kudava.NativeMath",
+    "decryptSelectedFileTo"
+)]
+pub fn decrypt_selected_file_to<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: jclass,
+    input_path: JString<'local>,
+    output_path: JString<'local>,
+    overwrite: jboolean,
 ) -> jboolean {
     unowned_env
         .with_env(
@@ -244,20 +308,27 @@ pub fn encrypt_selected_file<'local>(
                 let input_path =
                     input_path.try_to_string(env)?;
 
+                let output_path =
+                    output_path.try_to_string(env)?;
+
                 let succeeded =
-                    match file_crypto::encrypt_file(
+                    match file_crypto::decrypt_file_to(
                         std::path::Path::new(
                             &input_path,
                         ),
+                        std::path::Path::new(
+                            &output_path,
+                        ),
+                        overwrite,
                     ) {
-                        Ok(output_path) => {
+                        Ok(created_path) => {
                             println!(
-                                "File encrypted successfully"
+                                "File decrypted successfully"
                             );
 
                             println!(
-                                "Encrypted output: {}",
-                                output_path.display()
+                                "Decrypted output: {}",
+                                created_path.display()
                             );
 
                             true
@@ -265,7 +336,7 @@ pub fn encrypt_selected_file<'local>(
 
                         Err(error) => {
                             eprintln!(
-                                "File encryption failed: {error}"
+                                "File decryption failed: {error}"
                             );
 
                             false
