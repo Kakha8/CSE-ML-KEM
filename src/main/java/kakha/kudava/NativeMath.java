@@ -14,4 +14,8 @@ public final class NativeMath {
     public static native boolean verifyStoredMlKem1024Keypair();
 
     public static native boolean testStoredMlKemDekEnvelope();
+
+    public static native boolean encryptSelectedFile(
+            String inputPath
+    );
 }

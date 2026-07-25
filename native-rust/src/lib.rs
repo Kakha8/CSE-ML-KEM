@@ -2,9 +2,12 @@ mod dek_envelope;
 mod dpapi;
 mod keystore;
 mod mlkem_keystore;
+mod file_crypto;
 
 use jni::{
-    EnvUnowned, jni_mangle,
+    objects::JString,
+    EnvUnowned,
+    jni_mangle,
     sys::{jboolean, jclass, jint},
 };
 
@@ -221,4 +224,58 @@ pub fn test_stored_ml_kem_dek_envelope<'local>(
     }
 
     keys_match
+}
+
+#[jni_mangle(
+    "kakha.kudava.NativeMath",
+    "encryptSelectedFile"
+)]
+pub fn encrypt_selected_file<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: jclass,
+    input_path: JString<'local>,
+) -> jboolean {
+    unowned_env
+        .with_env(
+            |env| -> Result<
+                jboolean,
+                jni::errors::Error,
+            > {
+                let input_path =
+                    input_path.try_to_string(env)?;
+
+                let succeeded =
+                    match file_crypto::encrypt_file(
+                        std::path::Path::new(
+                            &input_path,
+                        ),
+                    ) {
+                        Ok(output_path) => {
+                            println!(
+                                "File encrypted successfully"
+                            );
+
+                            println!(
+                                "Encrypted output: {}",
+                                output_path.display()
+                            );
+
+                            true
+                        }
+
+                        Err(error) => {
+                            eprintln!(
+                                "File encryption failed: {error}"
+                            );
+
+                            false
+                        }
+                    };
+
+                Ok(succeeded)
+            },
+        )
+        .resolve::<
+            jni::errors::ThrowRuntimeExAndDefault,
+        >()
 }
