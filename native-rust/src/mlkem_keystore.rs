@@ -16,8 +16,11 @@ use crate::dpapi;
 
 const ML_KEM_1024_SEED_LENGTH: usize = 64;
 
-const PRIVATE_KEY_FILE_NAME: &str = "ml-kem-1024-private.dpapi";
-const PUBLIC_KEY_FILE_NAME: &str = "ml-kem-1024-public.bin";
+const PRIVATE_KEY_FILE_NAME: &str =
+    "ml-kem-1024-private.dpapi";
+
+const PUBLIC_KEY_FILE_NAME: &str =
+    "ml-kem-1024-public.bin";
 
 #[derive(Debug, Error)]
 pub enum MlKemKeystoreError {
@@ -37,7 +40,8 @@ pub enum MlKemKeystoreError {
     AlreadyExists,
 
     #[error(
-        "invalid ML-KEM-1024 private seed length: found {0} bytes, expected 64"
+        "invalid ML-KEM-1024 private seed length: \
+         found {0} bytes, expected 64"
     )]
     InvalidPrivateSeedLength(usize),
 
@@ -45,7 +49,8 @@ pub enum MlKemKeystoreError {
     InvalidPrivateSeed,
 
     #[error(
-        "stored ML-KEM-1024 public key does not match the stored private key"
+        "stored ML-KEM-1024 public key does not match \
+         the stored private key"
     )]
     PublicKeyMismatch,
 
@@ -59,28 +64,33 @@ pub struct MlKemKeyPaths {
     pub public_key_path: PathBuf,
 }
 
-fn application_directory() -> Result<PathBuf, MlKemKeystoreError> {
+fn application_directory(
+) -> Result<PathBuf, MlKemKeystoreError> {
     let local_app_data =
-        env::var_os("LOCALAPPDATA").ok_or(MlKemKeystoreError::MissingLocalAppData)?;
+        env::var_os("LOCALAPPDATA")
+            .ok_or(
+                MlKemKeystoreError::MissingLocalAppData,
+            )?;
 
-    Ok(PathBuf::from(local_app_data).join("CSE-ML-KEM"))
+    Ok(
+        PathBuf::from(local_app_data)
+            .join("CSE-ML-KEM"),
+    )
 }
 
-pub fn default_ml_kem_key_paths() -> Result<MlKemKeyPaths, MlKemKeystoreError> {
+pub fn default_ml_kem_key_paths(
+) -> Result<MlKemKeyPaths, MlKemKeystoreError> {
     let directory = application_directory()?;
 
     Ok(MlKemKeyPaths {
-        private_key_path: directory.join(PRIVATE_KEY_FILE_NAME),
-        public_key_path: directory.join(PUBLIC_KEY_FILE_NAME),
+        private_key_path:
+        directory.join(PRIVATE_KEY_FILE_NAME),
+
+        public_key_path:
+        directory.join(PUBLIC_KEY_FILE_NAME),
     })
 }
 
-/// Generates and stores an ML-KEM-1024 keypair.
-///
-/// The private 64-byte seed is protected using Windows DPAPI.
-/// The public encapsulation key is stored as ordinary binary data.
-///
-/// Existing key files are never overwritten.
 pub fn generate_and_store_ml_kem1024_keypair(
 ) -> Result<MlKemKeyPaths, MlKemKeystoreError> {
     let paths = default_ml_kem_key_paths()?;
@@ -93,9 +103,6 @@ pub fn generate_and_store_ml_kem1024_keypair(
     Ok(paths)
 }
 
-/// Loads the stored private seed, reconstructs the keypair,
-/// checks that the stored public key matches, and performs an
-/// encapsulation/decapsulation self-test.
 pub fn verify_stored_ml_kem1024_keypair(
 ) -> Result<(), MlKemKeystoreError> {
     let paths = default_ml_kem_key_paths()?;
@@ -106,7 +113,6 @@ pub fn verify_stored_ml_kem1024_keypair(
     )
 }
 
-/// Returns true only when both key files exist.
 pub fn ml_kem1024_keypair_exists(
 ) -> Result<bool, MlKemKeystoreError> {
     let paths = default_ml_kem_key_paths()?;
@@ -117,28 +123,84 @@ pub fn ml_kem1024_keypair_exists(
     )
 }
 
+/// Loads the DPAPI-protected private seed, reconstructs the
+/// ML-KEM decapsulation key, and confirms that its public key
+/// matches the stored public-key file.
+pub fn load_stored_ml_kem1024_decapsulation_key(
+) -> Result<DecapsulationKey1024, MlKemKeystoreError> {
+    let paths = default_ml_kem_key_paths()?;
+
+    let protected_private_seed =
+        fs::read(&paths.private_key_path)?;
+
+    let private_seed =
+        dpapi::unprotect(&protected_private_seed)?;
+
+    if private_seed.len() != ML_KEM_1024_SEED_LENGTH {
+        return Err(
+            MlKemKeystoreError::InvalidPrivateSeedLength(
+                private_seed.len(),
+            ),
+        );
+    }
+
+    let decapsulation_key =
+        DecapsulationKey1024::new_from_slice(
+            private_seed.as_slice(),
+        )
+            .map_err(|_| {
+                MlKemKeystoreError::InvalidPrivateSeed
+            })?;
+
+    let stored_public_key =
+        fs::read(&paths.public_key_path)?;
+
+    let derived_public_key =
+        decapsulation_key
+            .encapsulation_key()
+            .to_bytes();
+
+    let derived_public_key_bytes: &[u8] =
+        AsRef::<[u8]>::as_ref(&derived_public_key);
+
+    if stored_public_key.as_slice()
+        != derived_public_key_bytes
+    {
+        return Err(
+            MlKemKeystoreError::PublicKeyMismatch,
+        );
+    }
+
+    // private_seed is zeroized when it leaves scope.
+    Ok(decapsulation_key)
+}
+
 fn generate_and_store_at(
     private_key_path: &Path,
     public_key_path: &Path,
 ) -> Result<(), MlKemKeystoreError> {
-    if private_key_path.exists() || public_key_path.exists() {
-        return Err(MlKemKeystoreError::AlreadyExists);
+    if private_key_path.exists()
+        || public_key_path.exists()
+    {
+        return Err(
+            MlKemKeystoreError::AlreadyExists,
+        );
     }
 
-    /*
-     * The preferred serialized form of the ML-KEM
-     * decapsulation key is a uniformly random 64-byte seed.
-     *
-     * Zeroizing clears this seed when it leaves scope.
-     */
     let mut private_seed =
-        Zeroizing::new([0u8; ML_KEM_1024_SEED_LENGTH]);
+        Zeroizing::new(
+            [0u8; ML_KEM_1024_SEED_LENGTH],
+        );
 
     getrandom::fill(&mut private_seed[..])?;
 
     let decapsulation_key =
-        DecapsulationKey1024::new_from_slice(&private_seed[..])
-            .map_err(|_| MlKemKeystoreError::InvalidPrivateSeed)?;
+        DecapsulationKey1024::new_from_slice(
+            &private_seed[..],
+        )
+            .map_err(|_| {
+                MlKemKeystoreError::InvalidPrivateSeed
+            })?;
 
     let encapsulation_key =
         decapsulation_key.encapsulation_key();
@@ -146,12 +208,9 @@ fn generate_and_store_at(
     let public_key_bytes =
         encapsulation_key.to_bytes();
 
-    // Explicitly select AsRef<[u8]> because the array type
-    // implements several AsRef variants.
     let public_key_slice: &[u8] =
         AsRef::<[u8]>::as_ref(&public_key_bytes);
 
-    // Protect the private seed before writing anything to disk.
     let protected_private_seed =
         dpapi::protect(&private_seed[..])?;
 
@@ -159,19 +218,16 @@ fn generate_and_store_at(
         fs::create_dir_all(parent)?;
     }
 
-    /*
-     * Write the protected private seed first.
-     *
-     * If writing the public key fails, remove the private file
-     * so the application is not left with a partial keypair.
-     */
     write_new_file(
         private_key_path,
         &protected_private_seed,
     )?;
 
     if let Err(error) =
-        write_new_file(public_key_path, public_key_slice)
+        write_new_file(
+            public_key_path,
+            public_key_slice,
+        )
     {
         let _ = fs::remove_file(private_key_path);
         return Err(error);
@@ -202,7 +258,9 @@ fn verify_at(
         DecapsulationKey1024::new_from_slice(
             private_seed.as_slice(),
         )
-            .map_err(|_| MlKemKeystoreError::InvalidPrivateSeed)?;
+            .map_err(|_| {
+                MlKemKeystoreError::InvalidPrivateSeed
+            })?;
 
     let encapsulation_key =
         decapsulation_key.encapsulation_key();
@@ -213,13 +271,6 @@ fn verify_at(
     let derived_public_key =
         encapsulation_key.to_bytes();
 
-    /*
-     * Explicitly tell Rust that we want a byte slice.
-     *
-     * Without this annotation, derived_public_key.as_ref()
-     * is ambiguous because the underlying array implements
-     * multiple AsRef variants.
-     */
     let derived_public_key_bytes: &[u8] =
         AsRef::<[u8]>::as_ref(&derived_public_key);
 
@@ -231,20 +282,14 @@ fn verify_at(
         );
     }
 
-    /*
-     * Functional self-test:
-     *
-     * 1. Encapsulate using the public key.
-     * 2. Decapsulate using the private key.
-     * 3. Confirm that both sides derived the same secret.
-     */
     let (
         ciphertext,
         sender_shared_secret,
     ) = encapsulation_key.encapsulate();
 
     let receiver_shared_secret =
-        decapsulation_key.decapsulate(&ciphertext);
+        decapsulation_key
+            .decapsulate(&ciphertext);
 
     if sender_shared_secret
         != receiver_shared_secret
@@ -254,10 +299,6 @@ fn verify_at(
         );
     }
 
-    /*
-     * private_seed is Zeroizing<Vec<u8>>.
-     * It is cleared when this function returns.
-     */
     Ok(())
 }
 
@@ -293,10 +334,7 @@ fn write_new_file(
 
     if let Err(error) = result {
         drop(file);
-
-        // Remove an incomplete file.
         let _ = fs::remove_file(path);
-
         return Err(error.into());
     }
 
@@ -338,11 +376,8 @@ mod tests {
             public_path,
         ) = test_paths("round-trip");
 
-        let _ =
-            fs::remove_file(&private_path);
-
-        let _ =
-            fs::remove_file(&public_path);
+        let _ = fs::remove_file(&private_path);
+        let _ = fs::remove_file(&public_path);
 
         generate_and_store_at(
             &private_path,
@@ -364,20 +399,13 @@ mod tests {
                     "public key should be readable",
                 );
 
-        assert!(
-            !stored_private.is_empty(),
-            "protected private key must not be empty",
-        );
-
-        assert!(
-            !stored_public.is_empty(),
-            "public key must not be empty",
-        );
+        assert!(!stored_private.is_empty());
+        assert!(!stored_public.is_empty());
 
         assert_ne!(
             stored_private.len(),
             ML_KEM_1024_SEED_LENGTH,
-            "private file must contain a DPAPI blob, not the raw seed",
+            "the private file must contain a DPAPI blob",
         );
 
         verify_at(
@@ -388,11 +416,8 @@ mod tests {
                 "stored ML-KEM keypair should verify",
             );
 
-        let _ =
-            fs::remove_file(private_path);
-
-        let _ =
-            fs::remove_file(public_path);
+        let _ = fs::remove_file(private_path);
+        let _ = fs::remove_file(public_path);
     }
 
     #[test]
@@ -402,11 +427,8 @@ mod tests {
             public_path,
         ) = test_paths("overwrite");
 
-        let _ =
-            fs::remove_file(&private_path);
-
-        let _ =
-            fs::remove_file(&public_path);
+        let _ = fs::remove_file(&private_path);
+        let _ = fs::remove_file(&public_path);
 
         generate_and_store_at(
             &private_path,
@@ -425,12 +447,10 @@ mod tests {
                     "second generation must be rejected",
                 );
 
-        assert!(
-            matches!(
-                error,
-                MlKemKeystoreError::AlreadyExists
-            ),
-        );
+        assert!(matches!(
+            error,
+            MlKemKeystoreError::AlreadyExists
+        ));
 
         verify_at(
             &private_path,
@@ -440,10 +460,7 @@ mod tests {
                 "the original keypair must remain valid",
             );
 
-        let _ =
-            fs::remove_file(private_path);
-
-        let _ =
-            fs::remove_file(public_path);
+        let _ = fs::remove_file(private_path);
+        let _ = fs::remove_file(public_path);
     }
 }

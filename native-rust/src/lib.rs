@@ -1,3 +1,4 @@
+mod dek_envelope;
 mod dpapi;
 mod keystore;
 mod mlkem_keystore;
@@ -162,4 +163,62 @@ pub fn verify_stored_ml_kem1024_keypair<'local>(
             false
         }
     }
+}
+#[jni_mangle("kakha.kudava.NativeMath", "testStoredMlKemDekEnvelope")]
+pub fn test_stored_ml_kem_dek_envelope<'local>(
+    _env: EnvUnowned<'local>,
+    _class: jclass,
+) -> jboolean {
+    let private_key = match mlkem_keystore::load_stored_ml_kem1024_decapsulation_key() {
+        Ok(key) => key,
+
+        Err(error) => {
+            eprintln!("Could not load stored ML-KEM keypair: {error}");
+            return false;
+        }
+    };
+
+    let original_dek = match dek_envelope::generate_dek() {
+        Ok(dek) => dek,
+
+        Err(error) => {
+            eprintln!("Could not generate AES-256 DEK: {error}");
+            return false;
+        }
+    };
+
+    let envelope = match dek_envelope::wrap_dek(private_key.encapsulation_key(), &*original_dek) {
+        Ok(envelope) => envelope,
+
+        Err(error) => {
+            eprintln!("Could not wrap AES-256 DEK: {error}");
+            return false;
+        }
+    };
+
+    let recovered_dek = match dek_envelope::unwrap_dek(&private_key, &envelope) {
+        Ok(dek) => dek,
+
+        Err(error) => {
+            eprintln!("Could not unwrap AES-256 DEK: {error}");
+            return false;
+        }
+    };
+
+    let keys_match = original_dek.as_slice() == recovered_dek.as_slice();
+
+    if keys_match {
+        println!("AES-256 DEK wrapped and unwrapped successfully");
+
+        println!(
+            "ML-KEM ciphertext: {} bytes",
+            envelope.ml_kem_ciphertext.len()
+        );
+
+        println!("Wrapped DEK: {} bytes", envelope.wrapped_dek.len());
+    } else {
+        eprintln!("Recovered AES-256 DEK did not match the original");
+    }
+
+    keys_match
 }

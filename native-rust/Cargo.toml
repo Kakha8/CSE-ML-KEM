@@ -18,3 +18,4 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography"
 ] }
+aes-gcm = { version = "0.11", features = ["zeroize"] }
