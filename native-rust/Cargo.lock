@@ -250,6 +250,9 @@ dependencies = [
  "getrandom",
  "jni",
  "ml-kem",
+ "thiserror",
+ "windows-sys",
+ "zeroize",
 ]
 
 [[package]]

@@ -10,3 +10,11 @@ crate-type = ["cdylib"]
 jni = "0.22"
 getrandom = "0.4"
 ml-kem = { version = "0.3.2", features = ["getrandom", "zeroize"] }
+
+thiserror = "2"
+zeroize = "1.9"
+
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography"
+] }
