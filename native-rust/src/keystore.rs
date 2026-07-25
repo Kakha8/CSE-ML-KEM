@@ -1,5 +1,7 @@
 use std::{
-    env, fs,
+    env,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -25,11 +27,15 @@ pub enum KeystoreError {
     #[error("DPAPI operation failed: {0}")]
     Dpapi(#[from] dpapi::DpapiError),
 
+    #[error("an AES-256 key already exists at {0}")]
+    AlreadyExists(PathBuf),
+
     #[error("invalid AES-256 key length: found {0} bytes, expected 32")]
     InvalidKeyLength(usize),
 }
 
-/// Returns:
+/// Returns the default protected-key location:
+///
 /// C:\Users\<user>\AppData\Local\CSE-ML-KEM\aes-256-key.dpapi
 pub fn default_aes_key_path() -> Result<PathBuf, KeystoreError> {
     let local_app_data = env::var_os("LOCALAPPDATA").ok_or(KeystoreError::MissingLocalAppData)?;
@@ -39,46 +45,81 @@ pub fn default_aes_key_path() -> Result<PathBuf, KeystoreError> {
         .join(KEY_FILE_NAME))
 }
 
-/// Generates a new AES-256 key and saves only its DPAPI-protected form.
+/// Generates a secure random 32-byte AES-256 key.
+///
+/// Only the DPAPI-protected representation is written to disk.
+/// The plaintext key is zeroized when this function returns.
 pub fn generate_and_store_aes256_key() -> Result<PathBuf, KeystoreError> {
     let mut key = Zeroizing::new([0u8; AES_256_KEY_LENGTH]);
 
-    // Fill all 32 bytes using the operating system RNG.
+    // Uses the operating system's secure random source.
     getrandom::fill(&mut key[..])?;
 
     let path = default_aes_key_path()?;
-    save_aes256_key_at(&path, &key[..])?;
 
-    // `key` is zeroized when this function ends.
+    create_aes256_key_at(&path, &key[..])?;
+
+    // `key` is automatically zeroized here.
     Ok(path)
 }
 
-/// Protects and writes an existing 32-byte key.
+/// Loads and decrypts the stored AES-256 key.
 ///
-/// This helper is also useful for deterministic unit tests.
-fn save_aes256_key_at(path: &Path, key: &[u8]) -> Result<(), KeystoreError> {
+/// The returned key is automatically zeroized when dropped.
+pub fn load_aes256_key() -> Result<Zeroizing<Vec<u8>>, KeystoreError> {
+    let path = default_aes_key_path()?;
+    load_aes256_key_at(&path)
+}
+
+/// Returns whether the default AES key file exists.
+pub fn aes256_key_exists() -> Result<bool, KeystoreError> {
+    let path = default_aes_key_path()?;
+    Ok(path.exists())
+}
+
+/// Creates a new protected key file without overwriting an
+/// existing key.
+fn create_aes256_key_at(path: &Path, key: &[u8]) -> Result<(), KeystoreError> {
     if key.len() != AES_256_KEY_LENGTH {
         return Err(KeystoreError::InvalidKeyLength(key.len()));
     }
 
+    // Protect the plaintext key before touching the filesystem.
     let protected_blob = dpapi::protect(key)?;
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    // Only the protected blob is written.
-    fs::write(path, protected_blob)?;
+    // create_new(true) guarantees that an existing key is not
+    // silently overwritten.
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(file) => file,
+
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(KeystoreError::AlreadyExists(path.to_path_buf()));
+        }
+
+        Err(error) => return Err(error.into()),
+    };
+
+    let write_result = (|| -> Result<(), std::io::Error> {
+        file.write_all(&protected_blob)?;
+        file.sync_all()?;
+        Ok(())
+    })();
+
+    if let Err(error) = write_result {
+        // Do not leave a partially written key file.
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(error.into());
+    }
 
     Ok(())
 }
 
-/// Reads and recovers the AES-256 key.
-pub fn load_aes256_key() -> Result<Zeroizing<Vec<u8>>, KeystoreError> {
-    let path = default_aes_key_path()?;
-    load_aes256_key_at(&path)
-}
-
+/// Loads a DPAPI-protected key from a specific location.
 fn load_aes256_key_at(path: &Path) -> Result<Zeroizing<Vec<u8>>, KeystoreError> {
     let protected_blob = fs::read(path)?;
     let key = dpapi::unprotect(&protected_blob)?;
@@ -94,20 +135,26 @@ fn load_aes256_key_at(path: &Path) -> Result<Zeroizing<Vec<u8>>, KeystoreError> 
 mod tests {
     use super::*;
 
+    fn test_path(name: &str) -> PathBuf {
+        env::temp_dir().join(format!("cse-ml-kem-{name}-{}.dpapi", std::process::id()))
+    }
+
     #[test]
     fn aes_key_file_round_trip() {
-        // Use a temporary test file instead of the real application key.
-        let test_path =
-            env::temp_dir().join(format!("cse-ml-kem-aes-test-{}.dpapi", std::process::id()));
+        let path = test_path("round-trip");
 
-        // Fixed test data, not a real randomly generated key.
+        // Remove leftovers from an interrupted earlier test.
+        let _ = fs::remove_file(&path);
+
+        // Fixed test bytes, not a real cryptographic key.
         let original_key = [0xA5_u8; AES_256_KEY_LENGTH];
 
-        save_aes256_key_at(&test_path, &original_key)
+        create_aes256_key_at(&path, &original_key)
             .expect("saving the protected key should succeed");
 
-        // Confirm plaintext was not written directly to disk.
-        let stored_bytes = fs::read(&test_path).expect("test file should be readable");
+        let stored_bytes = fs::read(&path).expect("protected key file should be readable");
+
+        assert!(!stored_bytes.is_empty());
 
         assert_ne!(
             stored_bytes.as_slice(),
@@ -116,7 +163,7 @@ mod tests {
         );
 
         let recovered_key =
-            load_aes256_key_at(&test_path).expect("loading the protected key should succeed");
+            load_aes256_key_at(&path).expect("loading the protected key should succeed");
 
         assert_eq!(
             recovered_key.as_slice(),
@@ -124,20 +171,37 @@ mod tests {
             "the recovered key must match the original"
         );
 
-        let _ = fs::remove_file(test_path);
+        let _ = fs::remove_file(path);
     }
-}
 
-#[test]
-#[ignore = "creates a real AES key under LOCALAPPDATA"]
-fn create_and_load_real_aes_key() {
-    let path = generate_and_store_aes256_key()
-        .expect("AES-256 key generation and storage should succeed");
+    #[test]
+    fn refuses_to_overwrite_existing_key() {
+        let path = test_path("overwrite");
 
-    println!("Protected key stored at: {}", path.display());
+        let _ = fs::remove_file(&path);
 
-    let recovered = load_aes256_key()
-        .expect("stored AES-256 key should load successfully");
+        let first_key = [0x11_u8; AES_256_KEY_LENGTH];
 
-    assert_eq!(recovered.len(), AES_256_KEY_LENGTH);
+        let second_key = [0x22_u8; AES_256_KEY_LENGTH];
+
+        create_aes256_key_at(&path, &first_key).expect("first key creation should succeed");
+
+        let error = create_aes256_key_at(&path, &second_key)
+            .expect_err("second key creation must be rejected");
+
+        assert!(
+            matches!(&error, KeystoreError::AlreadyExists(_)),
+            "expected AlreadyExists, received: {error}"
+        );
+
+        let recovered_key = load_aes256_key_at(&path).expect("the original key should still load");
+
+        assert_eq!(
+            recovered_key.as_slice(),
+            first_key.as_slice(),
+            "the original key must not be overwritten"
+        );
+
+        let _ = fs::remove_file(path);
+    }
 }

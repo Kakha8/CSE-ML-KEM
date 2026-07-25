@@ -14,4 +14,12 @@ public final class NativeMath {
     public static native void generateAndPrintAes256Key();
     public static native void generateAndPrintMlKem1024Keypair();
 
+    public static native boolean createStoredAes256Key();
+
+    public static native boolean verifyStoredAes256Key();
+
+    public static native boolean createStoredMlKem1024Keypair();
+
+    public static native boolean verifyStoredMlKem1024Keypair();
+
 }

@@ -1,9 +1,10 @@
 mod dpapi;
 mod keystore;
+mod mlkem_keystore;
 
 use jni::{
     EnvUnowned, jni_mangle,
-    sys::{jclass, jint},
+    sys::{jboolean, jclass, jint},
 };
 
 use ml_kem::{
@@ -72,4 +73,93 @@ pub fn generate_and_print_ml_kem_1024_keypair<'local>(_env: EnvUnowned<'local>, 
         "ML-KEM shared secret: {}",
         bytes_to_hex(sender_shared_secret.as_ref())
     );
+}
+
+#[jni_mangle("kakha.kudava.NativeMath", "createStoredAes256Key")]
+pub fn create_stored_aes256_key<'local>(_env: EnvUnowned<'local>, _class: jclass) -> jboolean {
+    match keystore::generate_and_store_aes256_key() {
+        Ok(path) => {
+            println!("Created DPAPI-protected AES-256 key at: {}", path.display());
+            true
+        }
+
+        Err(error) => {
+            eprintln!("Could not create AES-256 key: {error}");
+            false
+        }
+    }
+}
+
+#[jni_mangle("kakha.kudava.NativeMath", "verifyStoredAes256Key")]
+pub fn verify_stored_aes256_key<'local>(_env: EnvUnowned<'local>, _class: jclass) -> jboolean {
+    match keystore::load_aes256_key() {
+        Ok(key) => {
+            println!(
+                "Successfully loaded a protected AES-256 key: {} bytes",
+                key.len()
+            );
+
+            // `key` is zeroized when dropped.
+            true
+        }
+
+        Err(error) => {
+            eprintln!("Could not load AES-256 key: {error}");
+            false
+        }
+    }
+}
+
+#[jni_mangle("kakha.kudava.NativeMath", "createStoredMlKem1024Keypair")]
+pub fn create_stored_ml_kem1024_keypair<'local>(
+    _env: EnvUnowned<'local>,
+    _class: jclass,
+) -> jboolean {
+    match mlkem_keystore::generate_and_store_ml_kem1024_keypair() {
+        Ok(paths) => {
+            println!(
+                "Created ML-KEM-1024 private key at: {}",
+                paths.private_key_path.display()
+            );
+
+            println!(
+                "Created ML-KEM-1024 public key at: {}",
+                paths.public_key_path.display()
+            );
+
+            true
+        }
+
+        Err(error) => {
+            eprintln!(
+                "Could not create ML-KEM-1024 keypair: \
+                 {error}"
+            );
+
+            false
+        }
+    }
+}
+
+#[jni_mangle("kakha.kudava.NativeMath", "verifyStoredMlKem1024Keypair")]
+pub fn verify_stored_ml_kem1024_keypair<'local>(
+    _env: EnvUnowned<'local>,
+    _class: jclass,
+) -> jboolean {
+    match mlkem_keystore::verify_stored_ml_kem1024_keypair() {
+        Ok(()) => {
+            println!("Stored ML-KEM-1024 keypair verified");
+
+            true
+        }
+
+        Err(error) => {
+            eprintln!(
+                "Could not verify ML-KEM-1024 keypair: \
+                 {error}"
+            );
+
+            false
+        }
+    }
 }
